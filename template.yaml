@@ -18,8 +18,8 @@ Resources:
         Type: "AWS::Lambda::Function"
         Properties:
             Description: ---
-            FunctionName: "put-cloudwatch-metrics"
-            Handler: "lambda_function.lambda_handler"
+            FunctionName: "put-quicksight-spice-metrics"
+            Handler: "index.lambda_handler"
             Architectures: 
               - "x86_64"
             Code: 
@@ -74,6 +74,16 @@ Resources:
             Role: !GetAtt IAMRole.Arn
             Runtime: "python3.9"
             Timeout: !Ref LambdaTimeout
+            # TracingConfig: 
+            #     Mode: "PassThrough"
+
+    LambdaPermission:
+        Type: "AWS::Lambda::Permission"
+        Properties:
+            Action: "lambda:InvokeFunction"
+            FunctionName: !Ref LambdaFunction
+            Principal: "events.amazonaws.com"
+            SourceArn: !GetAtt EventsRule.Arn
 
     EventsRule:
         Type: "AWS::Events::Rule"
@@ -134,7 +144,7 @@ Resources:
                                 "logs:PutLogEvents"
                             ],
                             "Resource": [
-                                "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/put-cloudwatch-metrics:*"
+                                "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/put-quicksight-spice-metrics:*"
                             ]
                         }
                     ]
