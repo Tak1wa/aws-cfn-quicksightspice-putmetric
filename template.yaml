@@ -1,0 +1,141 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: ---
+Parameters:
+  LambdaMemorySize:
+    Default: 128
+    Type: Number
+    Description: Lambda Memory Size
+  LambdaTimeout:
+    Default: 300
+    Type: Number
+    Description: Lambda Timeout
+  LambdaExecSchedule:
+    Default: "rate(1 hour)"
+    Type: String
+    Description: Lambda Execute Schedule
+Resources:
+    LambdaFunction:
+        Type: "AWS::Lambda::Function"
+        Properties:
+            Description: ---
+            FunctionName: "put-cloudwatch-metrics"
+            Handler: "lambda_function.lambda_handler"
+            Architectures: 
+              - "x86_64"
+            Code: 
+              ZipFile: |
+                import json
+                import boto3
+                import botocore
+                import datetime
+
+                def lambda_handler(event, context):
+                    sts = boto3.client('sts')
+                    id_info = sts.get_caller_identity()
+
+                    client = boto3.client('quicksight')
+                    list_dataset = client.list_data_sets(AwsAccountId=id_info['Account'])
+                    
+                    bytesizes = []
+                    
+                    for current_dataset in list_dataset['DataSetSummaries']:
+                        if current_dataset['ImportMode'] == 'SPICE':
+                            ### DescribeDataSet
+                            try:
+                                response = client.describe_data_set(
+                                    AwsAccountId=id_info['Account'],
+                                    DataSetId=current_dataset['DataSetId']
+                                )
+                                bytesizes.append(response['DataSet']['ConsumedSpiceCapacityInBytes'])
+                            except botocore.exceptions.ClientError as error:
+                                if error.response['Error']['Code'] == 'InvalidParameterValueException':
+                                    ### ListIngestions
+                                    ingestions = client.list_ingestions(DataSetId=current_dataset['DataSetId'],AwsAccountId=id_info['Account'])
+                                    bytesizes.append(sum([ingestion['IngestionSizeInBytes'] for ingestion in ingestions['Ingestions']]))
+                                else:
+                                    raise error
+                    sum_bytesizes = sum(bytesizes)
+                    print(sum_bytesizes)
+                    
+                    ## Put CloudWatch
+                    cloudwatch = boto3.client('cloudwatch')
+                    response = cloudwatch.put_metric_data(
+                                    Namespace='QuickSight',
+                                    MetricData=[
+                                            {
+                                                'MetricName': 'SpiceSizeInBytes',
+                                                'Timestamp': datetime.datetime.utcnow(),
+                                                'Value': sum_bytesizes,
+                                                'Unit': 'Bytes'
+                                            }
+                                        ]
+                                )
+            MemorySize: !Ref LambdaMemorySize
+            Role: !GetAtt IAMRole.Arn
+            Runtime: "python3.9"
+            Timeout: !Ref LambdaTimeout
+
+    EventsRule:
+        Type: "AWS::Events::Rule"
+        Properties:
+            Name: "quicksight-put-metrics-event"
+            ScheduleExpression: !Ref LambdaExecSchedule
+            State: "ENABLED"
+            Targets: 
+              - Id: "0"
+                Arn: !GetAtt LambdaFunction.Arn
+            EventBusName: "default"
+
+    IAMRole:
+        Type: "AWS::IAM::Role"
+        Properties:
+            Path: "/service-role/"
+            RoleName: "put-cloudwatch-metrics-role"
+            AssumeRolePolicyDocument: 
+              Version: 2012-10-17
+              Statement:
+              - Effect: Allow
+                Principal:
+                  Service: lambda.amazonaws.com
+                Action: sts:AssumeRole
+            MaxSessionDuration: 3600
+            ManagedPolicyArns: 
+              - !Ref IAMManagedPolicy
+
+    IAMManagedPolicy:
+        Type: "AWS::IAM::ManagedPolicy"
+        Properties:
+            ManagedPolicyName: "allow-quicksight-check-metrics"
+            Path: "/"
+            PolicyDocument: !Sub |
+                {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Sid": "VisualEditor0",
+                            "Effect": "Allow",
+                            "Action": [
+                                "cloudwatch:PutMetricData",
+                                "quicksight:DescribeDataSet",
+                                "quicksight:ListDataSets",
+                                "quicksight:ListIngestions"
+                            ],
+                            "Resource": "*"
+                        },
+                        {
+                            "Effect": "Allow",
+                            "Action": "logs:CreateLogGroup",
+                            "Resource": "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+                        },
+                        {
+                            "Effect": "Allow",
+                            "Action": [
+                                "logs:CreateLogStream",
+                                "logs:PutLogEvents"
+                            ],
+                            "Resource": [
+                                "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/put-cloudwatch-metrics:*"
+                            ]
+                        }
+                    ]
+                }
